@@ -248,7 +248,7 @@ SKIP_MISC="(-?(on.?build)|pgrouting.*old)|seafile-mc:(7.0.1|7.0.2|7.0.3|7.0.4|7.
 SKIP_NODE="((node):.*alpine3\..?.?)"
 SKIP_TF="(tensorflow.serving:[0-9].*)"
 SKIP_MINIO="(k8s-operator|((minio|mc):(RELEASE.)?[0-9]{4}-.{7}))"
-SKIP_MAILU="(mailu.*:pr-|mailu.*(1\.9\.|feat|patch|merg|refactor|revert|upgrade|fix-|pr-template))"
+SKIP_MAILU="(mailu.*:pr-|mailu.*(1\.9\.|master|feat|patch|merg|refactor|revert|upgrade|fix-|pr-template))"
 SKIP_DOCKER="docker(\/|:)([0-9]+\.[0-9]+\.|17|18.0[1-6]|1$|1(\.|-)).*"
 SKIPPED_TAGS="$SKIP_TF|$SKIP_MINOR_OS|$SKIP_NODE|$SKIP_DOCKER|$SKIP_MINIO|$SKIP_MAILU|$SKIP_MINOR_ES2|$SKIP_MINOR|$SKIP_PRE|$SKIP_OS|$SKIP_PHP|$SKIP_WINDOWS|$SKIP_MISC"
 CURRENT_TS=$(date +%s)
@@ -277,15 +277,11 @@ find_top_node_() {
 }
 find_top_node() { (set +e && find_top_node_ && set -e;); }
 NODE_TOP="$(echo $(find_top_node))"
-MAILU_VERSiON=1.9
+MAILU_VERSION=1.9
 
 BATCHED_IMAGES="\
-mailu/rspamd/$MAILU_VERSiON\
- mailu/rspamd/latest\
- mailu/rspamd/master\
- mailu/postfix/$MAILU_VERSiON\
- mailu/postfix/latest\
- mailu/postfix/master::7
+mailu/rspamd/$MAILU_VERSION::7
+mailu/postfix/$MAILU_VERSION::7
 "
 SKIP_REFRESH_ANCESTORS=${SKIP_REFRESH_ANCESTORS-}
 
