@@ -1,4 +1,4 @@
-FROM mailu/rspamd:1.5
+FROM mailu/postfix:1.9
 ARG DO_UPDATE=y
 ARG NONINTERACTIVE=y
 ARG INSTALL_DEFAULT_LOCALE="fr_FR.UTF-8"
@@ -11,7 +11,6 @@ ARG DOCKERIZE_RELEASE=latest
 ARG CURL_SSL_OPTS=--tlsv1
 ARG DOCKER_IMAGES_COMMIT=master
 ARG COPS_HELPERS=/cops_helpers
-ARG EXTRA_FILES_LIST="mailu/rspamd/*packages*.txt"
 ADD \
     helpers/up.sh \
     helpers/add_gosu.sh \
