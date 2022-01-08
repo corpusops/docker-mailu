@@ -65,7 +65,7 @@ jobs:
       fail-fast: false
       matrix:
         IMAGES:
-        - "mailu/rspamd/1.7 mailu/rspamd/latest mailu/rspamd/master mailu/postfix/1.7 mailu/postfix/latest mailu/postfix/master"
+        - "mailu/rspamd/1.9 mailu/rspamd/latest mailu/rspamd/master mailu/postfix/1.9 mailu/postfix/latest mailu/postfix/master"
         #- "corpusops/test/a corpusops/test/b corpusops/test/c"
         # all images that werent explicitly told to be built would be built in the next batches
         # we span them onto N jobs

@@ -277,7 +277,7 @@ find_top_node_() {
 }
 find_top_node() { (set +e && find_top_node_ && set -e;); }
 NODE_TOP="$(echo $(find_top_node))"
-MAILU_VERSiON=1.7
+MAILU_VERSiON=1.9
 
 BATCHED_IMAGES="\
 mailu/rspamd/$MAILU_VERSiON\
