@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -e
 shopt -s extglob
+export DOCKER_BUILDKIT=${DOCKER_BUILDKIT-1}
+export COMPOSE_DOCKER_CLI_BUILD=${COMPOSE_DOCKER_CLI_BUILD-1}
+export BUILDKIT_PROGRESS=${BUILDKIT_PROGRESS-plain}
 ## refresh from corpsusops.bootstrap/hacking/shell_glue (copy paste until last function)
 readlinkf() {
-    if ( uname | egrep -iq "darwin|bsd" );then
+    if ( uname | grep -E -iq "darwin|bsd" );then
         if ( which greadlink 2>&1 >/dev/null );then
             greadlink -f "$@"
         elif ( which perl 2>&1 >/dev/null );then
@@ -23,6 +26,10 @@ NORMAL="\\e[0;0m"
 NO_COLOR=${NO_COLORS-${NO_COLORS-${NOCOLOR-${NOCOLORS-}}}}
 LOGGER_NAME=${LOGGER_NAME:-corpusops_build}
 ERROR_MSG="There were errors"
+ver_ge() { [  "$2" = "`echo -e "$1\n$2" | sort -V | head -n1`" ]; }
+ver_gt() { [ "$1" = "$2" ] && return 1 || ver_ge $1 $2; }
+ver_le() { [  "$1" = "`echo -e "$1\n$2" | sort -V | head -n1`" ]; }
+ver_lt() { [ "$1" = "$2" ] && return 1 || ver_le $1 $2; }
 uniquify_string() {
     local pattern=$1
     shift
@@ -221,21 +228,20 @@ FORCE_REBUILD=${FORCE_REBUILD-}
 DRYRUN=${DRYRUN-}
 NOREFRESH=${NOREFRESH-}
 NBPARALLEL=${NBPARALLEL-2}
+SKIP_TAGS_REBUILD=${SKIP_TAGS_REBUILD-}
+SKIP_TAGS_REFRESH=${SKIP_TAGS_REFRESH-${SKIP_TAGS_REBUILD}}
 SKIP_IMAGES_SCAN=${SKIP_IMAGES_SCAN-}
-SKIP_MINOR_ES="((elasticsearch):.*([0-5]\.?){3}(-32bit.*)?)"
-SKIP_MINOR_ES2="$SKIP_MINOR_ES|(elasticsearch:(5\.[0-4]\.)|(6\.8\.[0-8])|(6\.[0-7])|(7\.9\.[0-2])|(7\.[0-8]))"
 # SKIP_MINOR_NGINX="((nginx):.*[0-9]+\.[0-9]+\.[0-9]+(-32bit.*)?)"
 MINOR_IMAGES="(golang|mariadb|memcached|mongo|mysql|nginx|node|php|postgres|python|rabbitmq|redis|redmine|ruby|solr)"
 SKIP_MINOR_OS="$MINOR_IMAGES:.*alpine[0-9].*"
 SKIP_MINOR="$MINOR_IMAGES:.*[0-9]+\.([0-9]+\.)[0-9]+(-32bit.*)?"
-SKIP_PRE="((redis|node|ruby|php|golang|python|mariadb|mysql|postgres|solr|elasticsearch|mongo|rabbitmq):.*(alpha|beta|rc)[0-9]*(-32bit.*)?)"
+SKIP_PRE="((redis|node|ruby|php|golang|python|mariadb|mysql|postgres|solr|elasticsearch|mongo|rabbitmq|opensearch):.*(alpha|beta|rc)[0-9]*(-32bit.*)?)"
 SKIP_OS="(((archlinux|suse|centos|fedora|redhat|alpine|debian|ubuntu|oldstable|oldoldstable):.*[0-9]{8}.*)"
 SKIP_OS="$SKIP_OS|((node):[0-9]+[0-9]+\.[0-9]+.*)"
 SKIP_OS="$SKIP_OS|((debian|redis):[0-9]+\.[0-9]+.*)"
 SKIP_OS="$SKIP_OS|(centos:.\..\.....|centos.\..\.....)"
 SKIP_OS="$SKIP_OS|(alpine:.\.[0-9]+\.[0-9]+)"
 SKIP_OS="$SKIP_OS|(debian:(6.*|squeeze))"
-SKIP_OS="$SKIP_OS|(ubuntu:(([0-9][0-9]\.[0-9][0-9]\..*)|(14.10|12|10|11|13|15)))"
 SKIP_OS="$SKIP_OS|(lucid|maverick|natty|precise|quantal|raring|saucy)"
 SKIP_OS="$SKIP_OS|(centos:(centos)?5)"
 SKIP_OS="$SKIP_OS|(fedora.*(modular|21))"
@@ -250,7 +256,7 @@ SKIP_TF="(tensorflow.serving:[0-9].*)"
 SKIP_MINIO="(k8s-operator|((minio|mc):(RELEASE.)?[0-9]{4}-.{7}))"
 SKIP_MAILU="(mailu.*:pr-|1.3|1.2|1.4|1.5|1.6|test-debian|latest|stable|mailu.*(1\.9\.|master|feat|patch|merg|refactor|revert|upgrade|fix-|pr-template))"
 SKIP_DOCKER="docker(\/|:)([0-9]+\.[0-9]+\.|17|18.0[1-6]|1$|1(\.|-)).*"
-SKIPPED_TAGS="$SKIP_TF|$SKIP_MINOR_OS|$SKIP_NODE|$SKIP_DOCKER|$SKIP_MINIO|$SKIP_MAILU|$SKIP_MINOR_ES2|$SKIP_MINOR|$SKIP_PRE|$SKIP_OS|$SKIP_PHP|$SKIP_WINDOWS|$SKIP_MISC"
+SKIPPED_TAGS="$SKIP_TF|$SKIP_MINOR_OS|$SKIP_NODE|$SKIP_DOCKER|$SKIP_MINIO|$SKIP_MAILU|$SKIP_MINOR|$SKIP_PRE|$SKIP_OS|$SKIP_PHP|$SKIP_WINDOWS|$SKIP_MISC"
 CURRENT_TS=$(date +%s)
 IMAGES_SKIP_NS="((mailhog|postgis|pgrouting(-bare)?|^library|dejavu|(minio/(minio|mc))))"
 
@@ -259,17 +265,18 @@ default_images="
 mailu/postfix
 mailu/rspamd
 "
-
+ONLY_ONE_MINOR="postgres|elasticsearch|nginx"
+PROTECTED_TAGS="corpusops/rsyslog"
 find_top_node_() {
     img=library/node
     if [ ! -e $img ];then return;fi
     for i in $(
         find $img -maxdepth 1 -mindepth 1 -type d \
-        |grep -v chakra|egrep -- "[^0-9.][0-9]+$"|egrep "1."|sort -V)
+        |grep -v chakra|grep -E -- "[^0-9.][0-9]+$"|grep -E "1."|sort -V)
     do
         for j in $(\
             find $i* -maxdepth 1 -mindepth 0 -type d \
-            |egrep "[0-9]+\.[0-9]+($|-alpine)$"\
+            |grep -E "[0-9]+\.[0-9]+($|-alpine)$"\
             |sed -re 's!.*/!!'|sort -V|tail -n12);do
             ls -d $img/$j
         done
@@ -289,7 +296,7 @@ declare -A duplicated_tags
 declare -A registry_tokens
 declare -A registry_services
 
-is_on_build() { echo "$@" | egrep -iq "on.*build"; }
+is_on_build() { echo "$@" | grep -E -iq "on.*build"; }
 slashcount() { local _slashcount="$(echo "${@}"|sed -e 's![^/]!!g')";echo ${#_slashcount}; }
 
 ## registry code badly inspired from:
@@ -323,7 +330,7 @@ setup_token() {
     registry_service=${registry_services[$tkey]}
     if [[ -z "$registry_token" ]];then
         local authinfos=$(curl -vvv $registry/v2/ 2>&1|grep -i Www-Authenticate:)
-        if ! ( echo  $authinfos | egrep -iq "Www-Authenticate:.*realm.*service" );then
+        if ! ( echo  $authinfos | grep -E -iq "Www-Authenticate:.*realm.*service" );then
             return 1
         fi
         # Www-Authenticate: Bearer realm="https://...",service="registry..."
@@ -345,7 +352,7 @@ get_image_scope() {
 
 get_image_tag() {
     local image="$1"
-    if ( echo $image | egrep -q ":[^/]+$" );then
+    if ( echo $image | grep -E -q ":[^/]+$" );then
         image=$( echo $image | sed -e 's!\(.*\):[^/]\+$!\1!' )
     fi
     echo $image
@@ -353,7 +360,7 @@ get_image_tag() {
 
 get_image_version() {
     local image="$1"
-    if ( echo $image | egrep -q ":[^/]+$" )
+    if ( echo $image | grep -E -q ":[^/]+$" )
         then local tag=${1//*:/}
         else local tag=latest
     fi
@@ -405,7 +412,7 @@ is_an_image_ancestor() {
         get_remote_image_configuration $ancestor 2>/dev/null || : )
     if [[ -n $alastlayer ]];then
         (image_query='.rootfs.diff_ids' \
-            get_remote_image_configuration $itag 2>/dev/null || : ) | egrep -q $alastlayer
+            get_remote_image_configuration $itag 2>/dev/null || : ) | grep -E -q $alastlayer
         ret=$?
     fi
     return $ret
@@ -418,6 +425,7 @@ get_image_changeset() {
     echo "$ret"
 }
 
+do_gen_image() { gen_image "$@"; }
 gen_image() {
     local image=$1 tag=$2
     local ldir="$TOPDIR/$image/$tag"
@@ -425,11 +433,11 @@ gen_image() {
     local dockeriles=""
     if [ ! -e "$ldir" ];then mkdir -p "$ldir";fi
     cd "$ldir"
-    if ( echo "$image $tag"|egrep -iq "redhat|centos|oracle|fedora|red-hat" );then
+    if ( echo "$image $tag"|grep -E -iq "redhat|centos|oracle|fedora|red-hat" );then
         system=redhat
-    elif ( echo "$image $tag"|egrep -iq suse );then
+    elif ( echo "$image $tag"|grep -E -iq suse );then
         system=suse
-    elif ( echo "$image $tag"|egrep -iq "mailhog|alpine" );then
+    elif ( echo "$image $tag"|grep -E -iq "mailhog|alpine" );then
         system=alpine
     fi
     IMG=$image
@@ -444,7 +452,11 @@ gen_image() {
         local df="$folder/Dockerfile.override"
         if [ -e "$df" ];then dockerfiles="$dockerfiles $df" && break;fi
     done
-    local parts="from args argspost helpers pre base post clean cleanpost labels labelspost"
+    local parts=""
+    for partsstep in squashpre from args argspost helpers pre base post postextra clean cleanpost predosquash squash postdosquash extra labels labelspost;do
+        parts="$parts pre_${partsstep} ${partsstep} post_${partsstep}"
+    done
+    parts=$(echo "$parts"|xargs)
     for order in $parts;do
         for folder in . .. ../../..;do
             local df="$folder/Dockerfile.$order"
@@ -465,19 +477,18 @@ gen_image() {
 
 is_skipped() {
     local ret=1 t="$@"
-    if ( echo "$t" | egrep -q "$SKIPPED_TAGS" );then
+    if [[ -z $SKIPPED_TAGS ]];then return 1;fi
+    if ( echo "$t" | grep -E -q "$SKIPPED_TAGS" );then
         ret=0
     fi
-    # if ( echo "$t" | egrep -q "/traefik" ) && ( echo "$t" | egrep -vq "alpine" );then
+    # if ( echo "$t" | grep -E -q "/traefik" ) && ( echo "$t" | grep -E -vq "alpine" );then
     #     ret=0
     # fi
     return $ret
 }
-# echo $(set -x && is_skipped library/redis/3.0.4-32bit;echo $?)
-# exit 1
 
 skip_local() {
-    egrep -v "(.\/)?local"
+    grep -E -v "(.\/)?local|\.git"
 }
 
 #  get_namespace_tag libary/foo/bar : get image tag with its final namespace
@@ -487,7 +498,7 @@ do_get_namespace_tag() {
         local version=$(basename $image)
         local repo=$DOCKER_REPO
         local tag=$(basename $(dirname $image))
-        if ! ( echo $image|egrep -q "$IMAGES_SKIP_NS" );then
+        if ! ( echo $image|grep -E -q "$IMAGES_SKIP_NS" );then
             local tag="$(dirname $(dirname $image))-$tag"
         fi
         for i in $image $image/.. $image/../../..;do
@@ -498,11 +509,22 @@ do_get_namespace_tag() {
             # ubuntu-bare / postgis
             if [ -e $i/tag ];then tag=$( cat $i/tag );break;fi
         done
+        for i in $image $image/.. $image/../../..;do
+            # ubuntu-bare / postgis
+            if [ -e $i/version ];then version=$( cat $i/version );break;fi
+        done
         echo "$repo/$tag:$version" \
-            | sed -re "s/(-?(server)?-(web-vault|postgresql|mysql)):/-server:\3-/g"
+            | sed -re "s/(-?(server)?-(web-vault|elasticsearch|opensearch|postgresql|mysql|mongo|mongodb|maria|mariadb)):/-server:\3-/g"
     done
 }
 
+filter_tags() {
+    for j in $@ ;do for i in $j;do
+        if is_skipped "$n:$i";then debug "Skipped: $n:$i";else printf "$i\n";fi
+    done;done | awk '!seen[$0]++' | sort -V
+}
+
+do_get_image_tags() { get_image_tags "$@"; }
 get_image_tags() {
     local n=$1
     local results="" result=""
@@ -516,7 +538,7 @@ get_image_tags() {
     else
         has_more=0
     fi
-    if [ $has_more -eq 0 ];then
+    if [[ -z ${SKIP_TAGS_REFRESH} ]] && [ $has_more -eq 0 ];then
         while [ $has_more -eq 0 ];do
             i=$((i+1))
             result=$( curl "${u}?page=${i}" 2>/dev/null \
@@ -525,12 +547,54 @@ get_image_tags() {
             if [[ -n "${result}" ]];then results="${results} ${result}";else has_more=256;fi
         done
         if [ ! -e "$TOPDIR/$n" ];then mkdir -p "$TOPDIR/$n";fi
-        printf "$results\n" | sort -V > "$t.raw"
+        printf "$results\n" | xargs -n 1 | sed -e "s/ //g" | sort -V > "$t.raw"
     fi
-    rm -f "$t"
-    ( for i in $(cat "$t.raw");do
-        if is_skipped "$n:$i";then debug "Skipped: $n:$i";else printf "$i\n";fi
-      done | awk '!seen[$0]++' | sort -V ) >> "$t"
+    # cleanup elastic minor images (keep latest)
+    atags="$(filter_tags "$(cat $t.raw)")"
+    changed=
+    if [[ "x${ONLY_ONE_MINOR}" != "x" ]] && ( echo $n | grep -E -q "$ONLY_ONE_MINOR" );then
+        oomt=""
+        for ix in $(seq 0 30);do
+            if ! ( echo "$atags" | grep -E -q "^$ix\." );then continue;fi
+            for j in $(seq 0 99);do
+                if ! ( echo "$atags" | grep -E -q "^$ix\.${j}\." );then continue;fi
+                for flavor in "" \
+                    alpine alpine3.13 alpine3.14 alpine3.15 alpine3.16 alpine3.5 \
+                    trusty xenial bionic focal jammy noble \
+                    bookworm bullseye stretch buster jessie \
+                    ;do
+                    selected=""
+                    if [[ -z "$flavor" ]];then
+                        selected="$( (( echo "$atags" | grep -E "$ix\.$j\.[0-9]+$" )    || true )|sort -V )"
+                    else
+                        if ! ( echo "$atags" | grep -E -q "$ix\.$j\..*$flavor$" );then continue;fi
+                        for k in $(seq 0 99);do
+                            v=$( (( echo "$atags" | grep -E "$ix\.$j\.${k}.*$flavor$" ) || true )|sort -V )
+                            if [[ -n $v ]];then
+                                if [[ -n $selected ]];then selected="$selected $v";else selected="$v";fi
+                            fi
+                        done
+                    fi
+                    if [[ -n "$selected" ]];then
+                        for l in $(echo "$selected"|sed -e "$ d");do
+                            if [[ -z $oomt ]];then
+                                oomt="$l$"
+                            else
+                                oomt="$oomt|$l"
+                            fi
+                        done
+                    fi
+                done
+            done
+            if [[ -n $oomt ]];then
+                SKIPPED_TAGS="$SKIPPED_TAGS|(($ONLY_ONE_MINOR):($oomt)$)"
+            fi
+        done
+    fi
+    if [[ -z ${SKIP_TAGS_REBUILD} ]];then
+        rm -f "$t"
+        filter_tags "$atags" > $t
+    fi
     set -e
     if [ -e "$t" ];then cat "$t";fi
 }
@@ -553,7 +617,7 @@ do_clean_tags() {
     if [[ -z "$1" ]];then echo "no image";exit 1;fi
     while read image;do
         local tag=$(basename $image)
-        if ! ( echo "$tags" | egrep -q "^$tag$" );then
+        if ! ( echo "$tags" | grep -E -q "^$tag$" );then
             rm -rfv "$image"
         fi
     done < <(find "$W/$image" -mindepth 1 -maxdepth 1 -type d 2>/dev/null|skip_local)
@@ -565,16 +629,25 @@ do_clean_tags() {
 #     refresh_images library/ubuntu: only refresh ubuntu images
 do_refresh_images() {
     local imagess="${@:-$default_images}"
+    cp -vf local/corpusops.bootstrap/bin/cops_pkgmgr_install.sh helpers/
+    if [[ -z ${SKIP_REFRESH_COPS-} ]];then
+    if ! ( grep -q corpusops/docker-images .git/config );then
     if [ ! -e local/docker-images ];then
         git clone https://github.com/corpusops/docker-images local/docker-images
     fi
     ( cd local/docker-images && git fetch --all && git reset --hard origin/master \
       && cp -rf helpers Dock* rootfs packages ../..; )
+    fi
+    fi
     while read images;do
         for image in $images;do
             if [[ -n $image ]];then
-                make_tags $image
-                do_clean_tags $image
+                if [[ -z "${SKIP_MAKE_TAGS-}" ]];then
+                    make_tags $image
+                fi
+                if ( echo "$image" | grep -E -vq "${PROTECTED_TAGS-}" ) || [[ -z ${PROTECTED_TAGS-} ]];then
+                    do_clean_tags $image
+                fi
             fi
         done
     done <<< "$imagess"
@@ -588,7 +661,7 @@ char_occurence() {
 
 
 get_image_from() {
-    local lancestor=$(egrep ^FROM "$1" |head -n1|awk '{print $2}')
+    local lancestor=$(grep -E ^FROM "$1" |head -n1|awk '{print $2}')
     echo $lancestor
 }
 
@@ -603,20 +676,20 @@ is_same_commit_label() {
     return $ret
 }
 
-get_docker_squash_args() {
-    DOCKER_DO_SQUASH=${DOCKER_DO_SQUASH-init}
-    if ! ( echo "${NO_SQUASH-}"|egrep -q "^(no)?$" );then
-        DOCKER_DO_SQUASH=""
-        log "no squash"
-    elif [[ "$DOCKER_DO_SQUASH" = init ]];then
-        DOCKER_DO_SQUASH="--squash"
-        if ! (printf "FROM alpine\nRUN touch foo\n" | docker build --squash - >/dev/null 2>&1 );then
-            DOCKER_DO_SQUASH=
-            log "docker squash isnt not supported"
-        fi
-    fi
-    echo $DOCKER_DO_SQUASH
-}
+#get_docker_squash_args() {
+#    DOCKER_DO_SQUASH=${DOCKER_DO_SQUASH-init}
+#    if ! ( echo "${NO_SQUASH-}"|grep -E -q "^(no)?$" );then
+#        DOCKER_DO_SQUASH=""
+#        log "no squash"
+#    elif [[ "$DOCKER_DO_SQUASH" = init ]];then
+#        DOCKER_DO_SQUASH="--squash"
+#        if ! (printf "FROM alpine\nRUN touch foo\n" | docker build --squash - >/dev/null 2>&1 );then
+#            DOCKER_DO_SQUASH=
+#            log "docker squash isnt not supported"
+#        fi
+#    fi
+#    echo $DOCKER_DO_SQUASH
+#}
 
 record_build_image() {
     # library/ubuntu/latest / corpusops/postgis/latest
@@ -632,7 +705,7 @@ record_build_image() {
         log "Image $itag is update to date, skipping build"
         return
     fi
-    dargs="${DOCKER_BUILD_ARGS-} $(get_docker_squash_args)"
+    dargs="${DOCKER_BUILD_ARGS-}"
     local dbuild="cat $image/$df|docker build ${dargs-}  -t $itag . -f - --build-arg=DOCKER_IMAGES_COMMIT=$git_commit"
     local retries=${DOCKER_BUILD_RETRIES:-2}
     local cmd="dret=8 && for i in \$(seq $retries);do if ($dbuild);then dret=0;break;else dret=6;fi;done"
@@ -655,7 +728,7 @@ load_all_batched_images() {
         while read imgs;do if [[ -n "$imgs" ]];then
             load_batched_images "${imgs//*::/}" "${imgs//::*/}"
         fi;done <<< "$BATCHED_IMAGES"
-        _images_list_=$(echo "$_images_list_"|egrep -v "^\s*$"| awk '!seen[$0]++'|sort -V)
+        _images_list_=$(echo "$_images_list_"|grep -E -v "^\s*$"| awk '!seen[$0]++'|sort -V)
     fi
 }
 
@@ -672,11 +745,11 @@ do_build() {
     local images_args="${@:-$default_images}" images="" allcandidates=""
     # batch then all zleftover images that werent batched at first
     local i=
-    if ( echo "$@" |egrep -q zleftover: ) && [[ -z "${SKIP_IMAGES_SCAN}" ]];then
+    if ( echo "$@" |grep -E -q zleftover: ) && [[ -z "${SKIP_IMAGES_SCAN}" ]];then
         load_all_batched_images
         for k in $(do_list_images);do
             for l in $(do_list_image $k);do
-                if ! (echo "$_images_list_"|egrep -q "^$l$");then
+                if ! (echo "$_images_list_"|grep -E -q "^$l$");then
                     if [[ -n "$allcandidates" ]];then allcandidates="$allcandidates ";fi
                     allcandidates="${allcandidates}${l}"
                 fi
@@ -782,7 +855,7 @@ do_list_image() {
     else for i in $(find -mindepth 2 -type d|skip_local );do
              if [ -e "$i/Dockerfile" ];then echo "$i";fi;done
     fi ) \
-    | egrep "${@}" \
+    | grep -E "${@}" \
     | sed -re "s|(\./)?(([^/]+(/[^/]+)))(/.*)|\2\5|g"\
     | awk '!seen[$0]++' | sort -V
 }
@@ -804,7 +877,7 @@ is_in_images() {
     local tomatch="$1"
     shift
     local i=""
-    for i in $@;do if ( echo "$_images_list_"| egrep -iq "^$i$" );then
+    for i in $@;do if ( echo "$_images_list_"| grep -E -iq "^$i$" );then
         ret=0
         break
     fi;done
@@ -838,7 +911,7 @@ load_batched_images() {
             local subimages=$(do_list_image $img)
             if [[ -z $subimages ]];then break;fi
             for j in $subimages;do
-                if ! ( is_in_images $j ) && ( echo "$batched_images" | egrep -q "^$j$");then
+                if ! ( is_in_images $j ) && ( echo "$batched_images" | grep -E -q "^$j$");then
                     local space=" "
                     if [ `expr $counter % $batchsize` = 0 ];then
                         space=""
@@ -902,14 +975,14 @@ do_usage() {
     # Show autodoc help
     awk '{ if ($0 ~ /^#[^!#]/) { \
                 gsub(/^#/, "", $0); print $0 } }' \
-                "$THISSCRIPT"|egrep -v "vim|^ colors"
+                "$THISSCRIPT"|grep -E -v "vim|^ colors"
     echo ""
 }
 
 
 do_main() {
     local args=${@:-usage}
-    local actions="make_tags|refresh_corpusops|refresh_images|build|gen_travis|gen_gh|gen|list_images|clean_tags|get_namespace_tag"
+    local actions="make_tags|refresh_corpusops|refresh_images|build|gen_travis|gen_gh|gen|list_images|clean_tags|get_namespace_tag|gen_image|get_image_tags"
     actions="@($actions)"
     action=${1-};
     if [[ -n "$@" ]];then shift;fi
